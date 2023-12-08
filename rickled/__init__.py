@@ -5,7 +5,9 @@ import copy
 import warnings
 from typing import Union, TypeVar
 from io import TextIOWrapper
-import yaml
+import yaml as pyyaml
+from ruamel.yaml import YAML as ruamelyaml
+from ruamel.yaml.compat import StringIO
 import base64
 import types
 import re
@@ -26,8 +28,16 @@ class ObjectRickler:
         - `tuple` types are deconstructed as lists
 
     """
-    def __init__(self):
+    def __init__(self, yaml_engine: str = 'pyyaml'):
         self.pat = re.compile(r'^( )*')
+        if yaml_engine == 'pyyaml':
+            self.yaml = pyyaml
+        elif yaml_engine == 'ruamelyaml':
+            # typ round-trip preserves comments and ordering
+            self.yaml = ruamelyaml(typ="rt")
+        else:
+            raise ValueError("Bogus Yaml engine given")
+        self.yaml_engine = ymal_engine
 
     def __destruct(self, value, name=None):
         if type(value) in (int, float, bool, str):
@@ -190,7 +200,18 @@ class ObjectRickler:
             str: Dumped object.
         """
         d = self.deconstruct(obj)
-        return yaml.safe_dump(d, None)
+
+        # This could be refactored so both pyyaml and ruamelyaml use StringIO, since pyyaml's dump is stream aware
+        if self.yaml_engine == 'ruamelyaml':
+            # dumping to string is memory inefficient
+            # hence, ruamel.yaml only dumps to streams
+            # Using StringIO for to_yaml_string compat
+            stream = StringIO()
+            self.yaml.dump(d, stream)
+            return stream.getvalue()        
+        else:
+            return self.yaml.safe_dump(d, None)
+
 
     def to_yaml_file(self, file_path, obj):
         """
@@ -202,7 +223,7 @@ class ObjectRickler:
         """
         d = self.deconstruct(obj)
         with open(file_path, 'w', encoding='utf-8') as fs:
-            yaml.safe_dump(d, fs)
+            self.yaml.safe_dump(d, fs)
 
     def to_json_string(self, obj):
         """
@@ -262,6 +283,17 @@ class BaseRickle:
         stringed = ''
         if base is None:
             return
+
+        yaml_engine = init_args.pop("yaml_engine", "pyyaml")
+        if yaml_engine == 'pyyaml':
+            self.yaml = pyyaml
+        elif yaml_engine == 'ruamelyaml':
+            # typ round-trip preserves comments and ordering
+            self.yaml = ruamelyaml(typ="rt")
+        else:
+            raise ValueError("Bogus Yaml engine given")
+        self.yaml_engine = yaml_engine
+
         if isinstance(base, dict):
             self._iternalize(base, deep, **init_args)
             return
@@ -273,7 +305,7 @@ class BaseRickle:
                 with open(file, 'r') as f:
                     stringed = f'{stringed}\n{f.read()}'
         elif os.path.isfile(base):
-            # print('loading file', base)
+            print('loading file', base)
             with open(base, 'r') as f:
                 stringed = f.read()
         elif isinstance(base, str):
@@ -298,7 +330,12 @@ class BaseRickle:
                 stringed = stringed.replace(_k,json.dumps(v))
 
         try:
-            dict_data = yaml.safe_load(stringed)
+            # We could refactor this with in the constructor when ruamel is used with
+            # self.yaml.safe_load = self.yaml.load
+            if self.yaml_engine == 'ruamelyaml':
+                dict_data = self.yaml.load(stringed)
+            else:
+                dict_data = self.yaml.safe_load(stringed)
             self._iternalize(dict_data, deep, **init_args)
             return
         except Exception as exc:
@@ -595,7 +632,10 @@ class BaseRickle:
         """
         self_as_dict = self.dict(serialised=serialised)
         with open(file_path, 'w', encoding='utf-8') as fs:
-            yaml.safe_dump(self_as_dict, fs)
+            if self.yaml_engine == 'ruamelyaml':
+                self.yaml.dump(self_as_dict, fs)
+            else:
+                self.yaml.safe_dump(self_as_dict, fs)
 
     def to_yaml_string(self, serialised : bool = True):
         """
@@ -611,7 +651,12 @@ class BaseRickle:
             str: YAML representation.
         """
         self_as_dict = self.dict(serialised=serialised)
-        return yaml.safe_dump(self_as_dict, None)
+        if self.yaml_engine == 'ruamelyaml':
+            stream = StringIO()
+            self.yaml.dump(self_as_dict, stream)
+            return stream.getvalue()
+        else:
+            return self.yaml.safe_dump(self_as_dict, None)
 
     def to_json_file(self, file_path: str, serialised : bool = True):
         """
